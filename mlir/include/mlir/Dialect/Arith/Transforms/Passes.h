@@ -22,6 +22,7 @@ namespace arith {
 #include "mlir/Dialect/Arith/Transforms/Passes.h.inc"
 
 class WideIntEmulationConverter;
+class NarrowIntEmulationConverter;
 
 /// Create a pass to bufferize Arith ops.
 std::unique_ptr<Pass> createArithBufferizePass();
@@ -34,6 +35,11 @@ std::unique_ptr<Pass> createConstantBufferizePass(uint64_t alignment = 0);
 /// i2N integer types into two iN halves.
 void populateArithWideIntEmulationPatterns(
     WideIntEmulationConverter &typeConverter, RewritePatternSet &patterns);
+
+/// Adds patterns to emulate narrow Arith and Function ops
+/// into wide supported integer types.
+void populateArithNarrowIntEmulationPatterns(
+    NarrowIntEmulationConverter &typeConverter, RewritePatternSet &patterns);
 
 /// Add patterns to expand Arith ceil/floor division ops.
 void populateCeilFloorDivExpandOpsPatterns(RewritePatternSet &patterns);

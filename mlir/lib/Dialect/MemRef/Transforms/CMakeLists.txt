@@ -4,6 +4,7 @@ add_mlir_dialect_library(MLIRMemRefTransforms
   ExpandOps.cpp
   ExpandStridedMetadata.cpp
   EmulateWideInt.cpp
+  EmulateNarrowInt.cpp
   ExtractAddressComputations.cpp
   FoldMemRefAliasOps.cpp
   IndependenceTransforms.cpp

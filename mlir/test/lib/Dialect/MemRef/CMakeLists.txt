@@ -1,6 +1,7 @@
 # Exclude tests from libMLIR.so
 add_mlir_library(MLIRMemRefTestPasses
   TestComposeSubView.cpp
+  TestEmulateNarrowInt.cpp
   TestMultiBuffer.cpp
 
   EXCLUDE_FROM_LIBMLIR
