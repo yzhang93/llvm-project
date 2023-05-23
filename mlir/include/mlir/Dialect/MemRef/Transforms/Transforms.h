@@ -25,6 +25,7 @@ class ValueRange;
 
 namespace arith {
 class WideIntEmulationConverter;
+class NarrowIntEmulationConverter;
 } // namespace arith
 
 namespace memref {
@@ -72,6 +73,17 @@ void populateMemRefWideIntEmulationPatterns(
 /// ops over narrowe integer types.
 void populateMemRefWideIntEmulationConversions(
     arith::WideIntEmulationConverter &typeConverter);
+
+/// Appends patterns for emulating narrow integer memref operations with ops
+/// over wider integer types.
+void populateMemRefNarrowIntEmulationPatterns(
+    arith::NarrowIntEmulationConverter &typeConverter,
+    RewritePatternSet &patterns);
+
+/// Appends type converions for emulating narrow integer memref operations with
+/// ops over wider integer types.
+void populateMemRefNarrowIntEmulationConversions(
+    arith::NarrowIntEmulationConverter &typeConverter);
 
 /// Transformation to do multi-buffering/array expansion to remove dependencies
 /// on the temporary allocation between consecutive loop iterations.

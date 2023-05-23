@@ -83,6 +83,25 @@ def ArithEmulateWideInt : Pass<"arith-emulate-wide-int"> {
   let dependentDialects = ["vector::VectorDialect"];
 }
 
+def ArithEmulateNarrowInt : Pass<"arith-emulate-narrow-int"> {
+  let summary = "Emulate narrow integer operations using wide integer operations";
+  let description = [{
+    Emulate arith integer operations that use narrow integer types with
+    equivalent operations on supported wide integer types.
+
+    This pass is intended preserve semantics but not necessarily provide the
+    most efficient implementation.
+
+    Currently, only power-of-two integer bitwidths are supported, and the target
+    wide integer is equal or larger than 8 bits.
+  }];
+  let options = [
+    Option<"targetWideInt", "target-wide-int", "unsigned",
+           /*default=*/"8", "Wide integer type supported by the target">,
+  ];
+  let dependentDialects = ["vector::VectorDialect"];
+}
+
 def ArithIntNarrowing : Pass<"arith-int-narrowing"> {
   let summary = "Reduce integer operation bitwidth";
   let description = [{
