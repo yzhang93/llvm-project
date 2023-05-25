@@ -1,4 +1,4 @@
-// RUN: mlir-opt --arith-emulate-narrow-int="target-wide-int=8" %s | FileCheck %s
+// RUN: mlir-opt --test-emulate-narrow-int="target-wide-int=8" %s | FileCheck %s
 
 // Expect no conversions, f32 is not an integer type.
 // CHECK-LABEL: func @identity_f32

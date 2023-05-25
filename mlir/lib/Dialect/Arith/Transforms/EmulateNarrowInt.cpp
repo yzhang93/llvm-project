@@ -23,53 +23,7 @@
 #include "llvm/Support/MathExtras.h"
 #include <cassert>
 
-namespace mlir::arith {
-#define GEN_PASS_DEF_ARITHEMULATENARROWINT
-#include "mlir/Dialect/Arith/Transforms/Passes.h.inc"
-} // namespace mlir::arith
-
 using namespace mlir;
-
-namespace {
-
-//===----------------------------------------------------------------------===//
-// Pass Definition
-//===----------------------------------------------------------------------===//
-
-struct EmulateNarrowIntPass final
-    : arith::impl::ArithEmulateNarrowIntBase<EmulateNarrowIntPass> {
-  using ArithEmulateNarrowIntBase::ArithEmulateNarrowIntBase;
-
-  void runOnOperation() override {
-    if (!llvm::isPowerOf2_32(targetWideInt) || targetWideInt < 8) {
-      signalPassFailure();
-      return;
-    }
-
-    Operation *op = getOperation();
-    MLIRContext *ctx = op->getContext();
-
-    arith::NarrowIntEmulationConverter typeConverter(targetWideInt);
-    ConversionTarget target(*ctx);
-    target.addDynamicallyLegalOp<func::FuncOp>([&typeConverter](Operation *op) {
-      return typeConverter.isLegal(cast<func::FuncOp>(op).getFunctionType());
-    });
-    auto opLegalCallback = [&typeConverter](Operation *op) {
-      return typeConverter.isLegal(op);
-    };
-    target.addDynamicallyLegalOp<func::CallOp, func::ReturnOp>(opLegalCallback);
-    target
-        .addDynamicallyLegalDialect<arith::ArithDialect, vector::VectorDialect>(
-            opLegalCallback);
-
-    RewritePatternSet patterns(ctx);
-    arith::populateArithNarrowIntEmulationPatterns(typeConverter, patterns);
-
-    if (failed(applyPartialConversion(op, target, std::move(patterns))))
-      signalPassFailure();
-  }
-};
-} // end anonymous namespace
 
 //===----------------------------------------------------------------------===//
 // Public Interface Definition

@@ -1,4 +1,4 @@
-// RUN: mlir-opt --memref-emulate-narrow-int="target-wide-int=8" %s | FileCheck %s
+// RUN: mlir-opt --test-emulate-narrow-int="target-wide-int=8" %s | FileCheck %s
 
 // Expect no conversions, i32 is supported.
 // CHECK-LABEL: func @memref_i32

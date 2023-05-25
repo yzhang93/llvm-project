@@ -44,22 +44,6 @@ def MemRefEmulateWideInt : Pass<"memref-emulate-wide-int"> {
   let dependentDialects = ["vector::VectorDialect"];
 }
 
-def MemRefEmulateNarrowInt : Pass<"memref-emulate-narrow-int"> {
-  let summary = "Emulate narrow integer operations using wide integer operations";
-  let description = [{
-    Emulate memref integer operations that use narrow integer types with
-    equivalent operations on supported wide integer types.
-
-    Currently, only power-of-two integer bitwidths are supported, and the target
-    wide integer is equal or larger than 8 bits.
-  }];
-  let options = [
-    Option<"targetWideInt", "target-wide-int", "unsigned",
-           /*default=*/"8", "Wide integer type supported by the target">,
-  ];
-  let dependentDialects = ["vector::VectorDialect"];
-}
-
 def NormalizeMemRefs : Pass<"normalize-memrefs", "ModuleOp"> {
   let summary = "Normalize memrefs";
    let description = [{

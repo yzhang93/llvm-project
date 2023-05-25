@@ -20,11 +20,6 @@
 #include "llvm/Support/MathExtras.h"
 #include <cassert>
 
-namespace mlir::memref {
-#define GEN_PASS_DEF_MEMREFEMULATENARROWINT
-#include "mlir/Dialect/MemRef/Transforms/Passes.h.inc"
-} // namespace mlir::memref
-
 using namespace mlir;
 
 //===----------------------------------------------------------------------===//
@@ -178,44 +173,6 @@ struct ConvertMemRefLoad final : OpConversionPattern<memref::LoadOp> {
     return success();
   }
 };
-
-//===----------------------------------------------------------------------===//
-// Pass Definition
-//===----------------------------------------------------------------------===//
-
-struct EmulateNarrowIntPass final
-    : memref::impl::MemRefEmulateNarrowIntBase<EmulateNarrowIntPass> {
-  using MemRefEmulateNarrowIntBase::MemRefEmulateNarrowIntBase;
-
-  void runOnOperation() override {
-    if (!llvm::isPowerOf2_32(targetWideInt) || targetWideInt < 8) {
-      signalPassFailure();
-      return;
-    }
-
-    Operation *op = getOperation();
-    MLIRContext *ctx = op->getContext();
-
-    arith::NarrowIntEmulationConverter typeConverter(targetWideInt);
-    memref::populateMemRefNarrowIntEmulationConversions(typeConverter);
-    ConversionTarget target(*ctx);
-    target
-        .addDynamicallyLegalDialect<arith::ArithDialect, memref::MemRefDialect>(
-            [&typeConverter](Operation *op) {
-              return typeConverter.isLegal(op);
-            });
-
-    RewritePatternSet patterns(ctx);
-    // Add common pattenrs to support contants, functions, etc.
-    arith::populateArithNarrowIntEmulationPatterns(typeConverter, patterns);
-
-    memref::populateMemRefNarrowIntEmulationPatterns(typeConverter, patterns);
-
-    if (failed(applyPartialConversion(op, target, std::move(patterns))))
-      signalPassFailure();
-  }
-};
-
 } // end anonymous namespace
 
 //===----------------------------------------------------------------------===//
