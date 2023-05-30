@@ -20,6 +20,7 @@
 using namespace mlir;
 
 namespace {
+
 struct TestEmulateNarrowIntPass
     : public PassWrapper<TestEmulateNarrowIntPass,
                          OperationPass<func::FuncOp>> {
@@ -48,6 +49,35 @@ struct TestEmulateNarrowIntPass
     MLIRContext *ctx = op->getContext();
 
     arith::NarrowIntEmulationConverter typeConverter(targetWideInt);
+
+    // Convert scalar type.
+    typeConverter.addConversion([this](IntegerType ty) -> std::optional<Type> {
+      unsigned width = ty.getWidth();
+      if (width >= arithBitwidth)
+        return ty;
+      else
+        return IntegerType::get(ty.getContext(), arithBitwidth);
+
+      return std::nullopt;
+    });
+
+    // Convert vector type.
+    typeConverter.addConversion([this](VectorType ty) -> std::optional<Type> {
+      auto intTy = dyn_cast<IntegerType>(ty.getElementType());
+      if (!intTy)
+        return ty;
+
+      unsigned width = intTy.getWidth();
+      if (width >= arithBitwidth)
+        return ty;
+      else
+        return VectorType::get(
+            to_vector(ty.getShape()),
+            IntegerType::get(ty.getContext(), arithBitwidth));
+
+      return std::nullopt;
+    });
+
     memref::populateMemRefNarrowIntEmulationConversions(typeConverter);
     ConversionTarget target(*ctx);
     target.addDynamicallyLegalOp<func::FuncOp>([&typeConverter](Operation *op) {
@@ -63,7 +93,6 @@ struct TestEmulateNarrowIntPass
 
     RewritePatternSet patterns(ctx);
 
-    // Add common pattenrs to support contants, functions, etc.
     arith::populateArithNarrowIntEmulationPatterns(typeConverter, patterns);
     memref::populateMemRefNarrowIntEmulationPatterns(typeConverter, patterns);
 
@@ -71,9 +100,13 @@ struct TestEmulateNarrowIntPass
       signalPassFailure();
   }
 
-  Option<unsigned> targetWideInt{*this, "target-wide-int",
+  Option<unsigned> targetWideInt{*this, "memref-target-bits",
                                  llvm::cl::desc("Target integer bit width"),
                                  llvm::cl::init(8)};
+
+  Option<unsigned> arithBitwidth{*this, "int4-arith-bitwidth",
+                                 llvm::cl::desc("Target integer bit width"),
+                                 llvm::cl::init(4)};
 };
 } // namespace
 

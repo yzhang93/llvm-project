@@ -86,28 +86,43 @@ struct ConvertMemRefLoad final : OpConversionPattern<memref::LoadOp> {
   LogicalResult
   matchAndRewrite(memref::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Type newResTy = getTypeConverter()->convertType(op.getType());
-    if (!newResTy)
+    Type newTy = getTypeConverter()->convertType(op.getType());
+    if (!newTy)
       return rewriter.notifyMatchFailure(
           op->getLoc(), llvm::formatv("failed to convert memref type: {0}",
                                       op.getMemRefType()));
+    if (op.getMemRefType() == cast<MemRefType>(newTy))
+      return success();
 
     auto loc = op.getLoc();
     Value source = adaptor.getMemref();
     auto sourceType = cast<MemRefType>(source.getType());
+    auto srcElementType = sourceType.getElementType();
     unsigned sourceRank = sourceType.getRank();
+
+    auto oldElementType =
+        cast<MemRefType>(op.getMemref().getType()).getElementType();
+    int srcBits = oldElementType.getIntOrFloatBitWidth();
+    int dstBits = srcElementType.getIntOrFloatBitWidth();
+    assert(dstBits % srcBits == 0);
+
+    // The emulation only works on 1D memref types. To make this work on N-D
+    // memref, we need to linearize the offset.
+    // Specifically, %0 = memref.load %0[%v0][%v1] :
+    // memref<?x?xi4, strided<[?, ?], offset = ?>> can be replaced with
+    // %b, %offset, %sizes:2, %strides:2 = memref.extract_strided_metadata %0
+    // %linearized_offset = %v0 * %stride#0 + %scaled_v1 * %stride#1
+    // where %scaled_v1 = v1 / targetBits * sourceBits
+    // %linearized_size = %size0 * %size1
+    // %linearized = memref.reinterpret_cast %b, offset = [%offset], sizes =
+    // [%linearized_size], strides = [%stride#1] %load = memref.load
+    // %linearized[%linearized_offset] : memref<?xi4, strided<?, offset = ?>>
     auto stridedMetadata =
         rewriter.create<memref::ExtractStridedMetadataOp>(loc, source);
     auto baseBuffer = stridedMetadata.getBaseBuffer();
     auto baseSizes = stridedMetadata.getSizes();
     auto baseStrides = stridedMetadata.getStrides();
     auto baseOffset = stridedMetadata.getOffset();
-
-    int srcBits = cast<MemRefType>(op.getMemref().getType())
-                      .getElementType()
-                      .getIntOrFloatBitWidth();
-    int dstBits = sourceType.getElementType().getIntOrFloatBitWidth();
-    assert(dstBits % srcBits == 0);
 
     SmallVector<Value> indices = adaptor.getIndices();
     assert(indices.size() == baseStrides.size());
@@ -127,49 +142,45 @@ struct ConvertMemRefLoad final : OpConversionPattern<memref::LoadOp> {
     }
 
     // Linearize offset and sizes.
-    Value linearized_offset = adjustOffsets[0];
-    Value linearized_size = baseSizes[0];
+    Value linearizedOffset = adjustOffsets[0];
+    Value linearizedSize = baseSizes[0];
     for (unsigned i = 1; i < sourceRank; ++i) {
-      linearized_offset = rewriter.create<arith::AddIOp>(loc, linearized_offset,
-                                                         adjustOffsets[i]);
-      linearized_size =
-          rewriter.create<arith::MulIOp>(loc, linearized_size, baseSizes[i]);
+      linearizedOffset = rewriter.create<arith::AddIOp>(loc, linearizedOffset,
+                                                        adjustOffsets[i]);
+      linearizedSize =
+          rewriter.create<arith::MulIOp>(loc, linearizedSize, baseSizes[i]);
     }
 
     // Flatten n-D MemRef to 1-D MemRef.
-    StridedLayoutAttr layoutAttr = StridedLayoutAttr::get(
+    auto layoutAttr = StridedLayoutAttr::get(
         sourceType.getContext(), ShapedType::kDynamic, {ShapedType::kDynamic});
     int64_t staticShape = sourceType.hasStaticShape()
                               ? sourceType.getNumElements()
                               : ShapedType::kDynamic;
-    auto flattenMemrefType =
-        MemRefType::get(staticShape, sourceType.getElementType(), layoutAttr,
-                        sourceType.getMemorySpace());
+    auto flattenMemrefType = MemRefType::get(
+        staticShape, srcElementType, layoutAttr, sourceType.getMemorySpace());
 
     auto reinterpret = rewriter.create<memref::ReinterpretCastOp>(
-        loc, flattenMemrefType, baseBuffer, baseOffset, linearized_size,
+        loc, flattenMemrefType, baseBuffer, baseOffset, linearizedSize,
         baseStrides.back());
 
-    auto newLoad =
-        rewriter.create<memref::LoadOp>(loc, newResTy, reinterpret.getResult(),
-                                        linearized_offset, op.getNontemporal());
+    auto newLoad = rewriter.create<memref::LoadOp>(
+        loc, srcElementType, reinterpret.getResult(), linearizedOffset,
+        op.getNontemporal());
 
     // Get the offset and shift the bits to the rightmost.
     auto lastIdx = rewriter.create<arith::IndexCastUIOp>(
-        loc, sourceType.getElementType(), adaptor.getIndices().back());
+        loc, srcElementType, adaptor.getIndices().back());
     Value BitwidthOffset =
         getOffsetForBitwidth(loc, lastIdx, srcBits, dstBits, rewriter);
     auto bitsLoad =
         rewriter.create<arith::ShRSIOp>(loc, newLoad, BitwidthOffset);
 
-    // Apply the mask to extract corresponding bits.
-    auto mask = rewriter.create<arith::ConstantOp>(
-        loc, sourceType.getElementType(),
-        rewriter.getIntegerAttr(sourceType.getElementType(),
-                                (1 << srcBits) - 1));
-    auto result = rewriter.create<arith::AndIOp>(loc, bitsLoad, mask);
-
+    // Get the low bits by truncating the result.
+    auto result =
+        rewriter.create<arith::TruncIOp>(loc, oldElementType, bitsLoad);
     rewriter.replaceOp(op, result.getResult());
+
     return success();
   }
 };
@@ -196,10 +207,16 @@ void memref::populateMemRefNarrowIntEmulationConversions(
         if (!intTy)
           return ty;
 
-        Type newElemTy = typeConverter.convertType(intTy);
-        if (!newElemTy)
-          return std::nullopt;
-
-        return ty.cloneWith(std::nullopt, newElemTy);
+        unsigned width = intTy.getWidth();
+        if (width >= typeConverter.targetBitwidth)
+          return ty;
+        else {
+          Type newElemTy =
+              IntegerType::get(ty.getContext(), typeConverter.targetBitwidth,
+                               intTy.getSignedness());
+          if (!newElemTy)
+            return std::nullopt;
+          return ty.cloneWith(std::nullopt, newElemTy);
+        }
       });
 }

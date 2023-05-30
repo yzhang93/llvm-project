@@ -1,4 +1,4 @@
-// RUN: mlir-opt --test-emulate-narrow-int="target-wide-int=8" %s | FileCheck %s
+// RUN: mlir-opt --test-emulate-narrow-int="int4-arith-bitwidth=4 memref-target-bits=8" %s | FileCheck %s
 
 // Expect no conversions, i32 is supported.
 // CHECK-LABEL: func @memref_i32
@@ -45,8 +45,7 @@ func.func @memref_f32() {
 // CHECK-NEXT:    %[[REM:.*]] = arith.remui %[[I]], %[[C2]] : i8
 // CHECK-NEXT:    %[[STEP:.*]] = arith.muli %[[REM]], %[[C4]] : i8
 // CHECK-NEXT:    %[[SHIFT:.*]] = arith.shrsi %[[LOAD]], %[[STEP]] : i8
-// CHECK-NEXT:    %[[MASK:.*]] = arith.constant 15 : i8
-// CHECK-NEXT:    %[[RES:.*]] = arith.andi %[[SHIFT]], %[[MASK]] : i8
+// CHECK-NEXT:    %[[RES:.*]] = arith.trunci %[[SHIFT]] : i8 to i4
 // CHECK-NEXT:    return
 func.func @memref_load_i4(%arg0: index) {
     %0 = memref.alloc() : memref<4xi4>
@@ -73,8 +72,7 @@ func.func @memref_load_i4(%arg0: index) {
 // CHECK-NEXT:    %[[REM:.*]] = arith.remui %[[I]], %[[C2]] : i8
 // CHECK-NEXT:    %[[STEP:.*]] = arith.muli %[[REM]], %[[C4]] : i8
 // CHECK-NEXT:    %[[SHIFT:.*]] = arith.shrsi %[[LOAD]], %[[STEP]] : i8
-// CHECK-NEXT:    %[[MASK:.*]] = arith.constant 15 : i8
-// CHECK-NEXT:    %[[RES:.*]] = arith.andi %[[SHIFT]], %[[MASK]] : i8
+// CHECK-NEXT:    %[[RES:.*]] = arith.trunci %[[SHIFT]] : i8 to i4
 // CHECK-NEXT:    return
 func.func @memref_load_i4_rank2(%arg0: index, %arg1: index) {
     %0 = memref.alloc() : memref<4x4xi4>
