@@ -19,9 +19,8 @@ namespace mlir::arith {
 class NarrowIntEmulationConverter : public TypeConverter {
 public:
   explicit NarrowIntEmulationConverter(unsigned targetWideInt);
-
-private:
   unsigned targetBitwidth;
+
 };
 } // namespace mlir::arith
 

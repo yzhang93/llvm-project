@@ -34,37 +34,9 @@ arith::NarrowIntEmulationConverter::NarrowIntEmulationConverter(
     : targetBitwidth(targetWideInt) {
   assert(llvm::isPowerOf2_32(targetWideInt) &&
          "Only power-of-two integers are supported");
-  assert(targetWideInt >= 8 && "Target integer type too narrow");
 
   // Allow unknown types.
   addConversion([](Type ty) -> std::optional<Type> { return ty; });
-
-  // Scalar case.
-  addConversion([this](IntegerType ty) -> std::optional<Type> {
-    unsigned width = ty.getWidth();
-    if (width >= targetBitwidth)
-      return ty;
-    else
-      return IntegerType::get(ty.getContext(), targetBitwidth);
-
-    return std::nullopt;
-  });
-
-  // Vector case.
-  addConversion([this](VectorType ty) -> std::optional<Type> {
-    auto intTy = dyn_cast<IntegerType>(ty.getElementType());
-    if (!intTy)
-      return ty;
-
-    unsigned width = intTy.getWidth();
-    if (width >= targetBitwidth)
-      return ty;
-    else
-      return VectorType::get(to_vector(ty.getShape()),
-                             IntegerType::get(ty.getContext(), targetBitwidth));
-
-    return std::nullopt;
-  });
 
   // Function case.
   addConversion([this](FunctionType ty) -> std::optional<Type> {
