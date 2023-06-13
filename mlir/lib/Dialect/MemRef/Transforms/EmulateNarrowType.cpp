@@ -7,9 +7,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/NarrowTypeEmulationConverter.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/Transforms/Transforms.h"
@@ -60,31 +62,32 @@ linearizeMemrefLoad(Location loc, MemRefType sourceType, int srcBits,
   assert(indices.size() == baseStrides.size());
 
   auto srcElementType = sourceType.getElementType();
-  IndexType targetType = builder.getIndexType();
-  IntegerAttr attr = builder.getIndexAttr(dstBits / srcBits);
-  auto scaler = builder.create<arith::ConstantOp>(loc, targetType, attr);
-
-  // Linearize offset and sizes.
-  SmallVector<Value> adjustOffsets;
   unsigned sourceRank = indices.size();
+
+  OpFoldResult linearizedOffset = builder.getIndexAttr(0);
+  OpFoldResult linearizedSize = builder.getIndexAttr(1);
+
+  AffineExpr s0, s1, s2;
+  bindSymbols(builder.getContext(), s0, s1, s2);
+  auto addMulMap = AffineMap::get(0, 3, s0 + s1 * s2);
+  auto mulMap = AffineMap::get(0, 2, s0 * s1);
+  auto divMap = AffineMap::get(0, 2, s0.floorDiv(s1));
+
+
   for (unsigned i = 0; i < sourceRank; ++i) {
-    adjustOffsets.push_back(
-        builder.create<arith::MulIOp>(loc, indices[i], baseStrides[i]));
+    linearizedOffset = affine::makeComposedFoldedAffineApply(
+        builder, loc, addMulMap,
+        {linearizedOffset, indices[i], baseStrides[i]});
+    linearizedSize = affine::makeComposedFoldedAffineApply(
+        builder, loc, mulMap, {linearizedSize, baseSizes[i]});
   }
 
-  Value linearizedOffset = adjustOffsets[0];
-  Value linearizedSize = baseSizes[0];
-  for (unsigned i = 1; i < sourceRank; ++i) {
-    linearizedOffset =
-        builder.create<arith::AddIOp>(loc, linearizedOffset, adjustOffsets[i]);
-    linearizedSize =
-        builder.create<arith::MulIOp>(loc, linearizedSize, baseSizes[i]);
-  }
-  linearizedOffset =
-      builder.create<arith::DivUIOp>(loc, linearizedOffset, scaler);
+  OpFoldResult scaler = builder.getIndexAttr(dstBits / srcBits);
+  linearizedOffset = affine::makeComposedFoldedAffineApply(
+      builder, loc, divMap, {linearizedOffset, scaler});
 
-  auto adjustBaseOffset =
-      builder.create<arith::DivUIOp>(loc, baseOffset, scaler);
+  OpFoldResult adjustBaseOffset = affine::makeComposedFoldedAffineApply(
+      builder, loc, divMap, {baseOffset, scaler});
 
   // Flatten n-D MemRef to 1-D MemRef.
   auto layoutAttr = StridedLayoutAttr::get(
@@ -96,11 +99,14 @@ linearizeMemrefLoad(Location loc, MemRefType sourceType, int srcBits,
       staticShape, srcElementType, layoutAttr, sourceType.getMemorySpace());
 
   auto reinterpret = builder.create<memref::ReinterpretCastOp>(
-      loc, flattenMemrefType, baseBuffer, adjustBaseOffset, linearizedSize,
+      loc, flattenMemrefType, baseBuffer,
+      getValueOrCreateConstantIndexOp(builder, loc, adjustBaseOffset),
+      getValueOrCreateConstantIndexOp(builder, loc, linearizedSize),
       baseStrides.back());
 
   return builder.create<memref::LoadOp>(
-      loc, srcElementType, reinterpret.getResult(), linearizedOffset);
+      loc, srcElementType, reinterpret.getResult(),
+      getValueOrCreateConstantIndexOp(builder, loc, linearizedOffset));
 }
 
 /// When data is loaded/stored in `targetBits` granularity, but is used in

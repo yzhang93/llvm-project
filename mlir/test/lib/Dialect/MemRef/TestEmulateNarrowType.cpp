@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/NarrowTypeEmulationConverter.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
@@ -31,8 +32,9 @@ struct TestEmulateNarrowTypePass
       : PassWrapper(pass) {}
 
   void getDependentDialects(DialectRegistry &registry) const override {
-    registry.insert<arith::ArithDialect, func::FuncDialect,
-                    memref::MemRefDialect, vector::VectorDialect>();
+    registry
+        .insert<arith::ArithDialect, func::FuncDialect, memref::MemRefDialect,
+                vector::VectorDialect, affine::AffineDialect>();
   }
   StringRef getArgument() const final { return "test-emulate-narrow-int"; }
   StringRef getDescription() const final {
@@ -85,7 +87,7 @@ struct TestEmulateNarrowTypePass
     };
     target.addDynamicallyLegalOp<func::CallOp, func::ReturnOp>(opLegalCallback);
     target.addDynamicallyLegalDialect<
-        arith::ArithDialect, vector::VectorDialect, memref::MemRefDialect>(
+        arith::ArithDialect, vector::VectorDialect, memref::MemRefDialect, affine::AffineDialect>(
         [&typeConverter](Operation *op) { return typeConverter.isLegal(op); });
 
     RewritePatternSet patterns(ctx);
