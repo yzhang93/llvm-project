@@ -55,39 +55,53 @@ linearizeMemrefLoad(Location loc, MemRefType sourceType, int srcBits,
                     int dstBits, SmallVector<Value> indices,
                     memref::ExtractStridedMetadataOp stridedMetadata,
                     OpBuilder &builder) {
+  auto srcElementType = sourceType.getElementType();
+  unsigned sourceRank = indices.size();
+
   auto baseBuffer = stridedMetadata.getBaseBuffer();
   auto baseSizes = stridedMetadata.getSizes();
   auto baseStrides = stridedMetadata.getStrides();
   auto baseOffset = stridedMetadata.getOffset();
   assert(indices.size() == baseStrides.size());
 
-  auto srcElementType = sourceType.getElementType();
-  unsigned sourceRank = indices.size();
+  // Create the affine symbols and values for linearization.
+  SmallVector<AffineExpr> symbols(2 * sourceRank + 2);
+  bindSymbolsList(builder.getContext(), MutableArrayRef{symbols});
+  symbols[0] = builder.getAffineSymbolExpr(0);
+  AffineExpr addMulMap = symbols.front();
+  AffineExpr mulMap = symbols.front();
 
-  OpFoldResult linearizedOffset = builder.getIndexAttr(0);
-  OpFoldResult linearizedSize = builder.getIndexAttr(1);
-
-  AffineExpr s0, s1, s2;
-  bindSymbols(builder.getContext(), s0, s1, s2);
-  auto addMulMap = AffineMap::get(0, 3, s0 + s1 * s2);
-  auto mulMap = AffineMap::get(0, 2, s0 * s1);
-  auto divMap = AffineMap::get(0, 2, s0.floorDiv(s1));
-
+  SmallVector<OpFoldResult> offsetValues(2 * sourceRank + 2);
+  offsetValues[0] = builder.getIndexAttr(0);
+  SmallVector<OpFoldResult> sizeValues(sourceRank + 1);
+  sizeValues[0] = builder.getIndexAttr(1);
 
   for (unsigned i = 0; i < sourceRank; ++i) {
-    linearizedOffset = affine::makeComposedFoldedAffineApply(
-        builder, loc, addMulMap,
-        {linearizedOffset, indices[i], baseStrides[i]});
-    linearizedSize = affine::makeComposedFoldedAffineApply(
-        builder, loc, mulMap, {linearizedSize, baseSizes[i]});
+    unsigned exprIdx = 2 * i + 1;
+    addMulMap = addMulMap + symbols[exprIdx] * symbols[exprIdx + 1];
+    offsetValues[exprIdx] = indices[i];
+    offsetValues[exprIdx + 1] = baseStrides[i];
+
+    exprIdx = i + 1;
+    mulMap = mulMap * symbols[exprIdx];
+    sizeValues[exprIdx] = baseSizes[i];
   }
 
+  // Adjust linearizedOffset by the scale factor (dstBits / srcBits).
   OpFoldResult scaler = builder.getIndexAttr(dstBits / srcBits);
-  linearizedOffset = affine::makeComposedFoldedAffineApply(
-      builder, loc, divMap, {linearizedOffset, scaler});
+  AffineExpr scaledAddMulMap = addMulMap.floorDiv(symbols.back());
+  offsetValues.back() = scaler;
 
+  OpFoldResult linearizedOffset = affine::makeComposedFoldedAffineApply(
+      builder, loc, scaledAddMulMap, offsetValues);
+  OpFoldResult linearizedSize =
+      affine::makeComposedFoldedAffineApply(builder, loc, mulMap, sizeValues);
+
+  // Adjust baseOffset by the scale factor (dstBits / srcBits).
+  AffineExpr s0, s1;
+  bindSymbols(builder.getContext(), s0, s1);
   OpFoldResult adjustBaseOffset = affine::makeComposedFoldedAffineApply(
-      builder, loc, divMap, {baseOffset, scaler});
+      builder, loc, s0.floorDiv(s1), {baseOffset, scaler});
 
   // Flatten n-D MemRef to 1-D MemRef.
   auto layoutAttr = StridedLayoutAttr::get(
