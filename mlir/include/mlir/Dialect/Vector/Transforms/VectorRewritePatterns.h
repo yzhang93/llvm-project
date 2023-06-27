@@ -22,6 +22,10 @@
 namespace mlir {
 class RewritePatternSet;
 
+namespace arith {
+class NarrowTypeEmulationConverter;
+} // namespace arith
+
 namespace vector {
 struct VectorTransformsOptions;
 
@@ -301,6 +305,17 @@ void populateBubbleVectorBitCastOpPatterns(RewritePatternSet &patterns,
 void populateVectorMaskMaterializationPatterns(RewritePatternSet &patterns,
                                                bool force32BitVectorIndices,
                                                PatternBenefit benefit = 1);
+
+/// Appends patterns for emulating vector operations over narrow types with ops
+/// over wider types.
+void populateVectorNarrowTypeEmulationPatterns(
+    arith::NarrowTypeEmulationConverter &typeConverter,
+    RewritePatternSet &patterns);
+
+/// Appends type conversions for emulating vector operations over narrow types
+/// with ops over wider types.
+void populateVectorNarrowTypeEmulationConversions(
+    arith::NarrowTypeEmulationConverter &typeConverter);
 
 } // namespace vector
 } // namespace mlir
