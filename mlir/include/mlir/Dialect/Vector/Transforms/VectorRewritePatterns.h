@@ -312,11 +312,6 @@ void populateVectorNarrowTypeEmulationPatterns(
     arith::NarrowTypeEmulationConverter &typeConverter,
     RewritePatternSet &patterns);
 
-/// Appends type conversions for emulating vector operations over narrow types
-/// with ops over wider types.
-void populateVectorNarrowTypeEmulationConversions(
-    arith::NarrowTypeEmulationConverter &typeConverter);
-
 } // namespace vector
 } // namespace mlir
 

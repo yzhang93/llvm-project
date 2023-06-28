@@ -79,7 +79,6 @@ struct TestEmulateNarrowTypePass
     });
 
     memref::populateMemRefNarrowTypeEmulationConversions(typeConverter);
-    vector::populateVectorNarrowTypeEmulationConversions(typeConverter);
     ConversionTarget target(*ctx);
     target.addDynamicallyLegalOp<func::FuncOp>([&typeConverter](Operation *op) {
       return typeConverter.isLegal(cast<func::FuncOp>(op).getFunctionType());

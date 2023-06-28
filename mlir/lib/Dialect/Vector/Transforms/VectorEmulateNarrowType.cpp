@@ -1,4 +1,4 @@
-//===- EmulateNarrowType.cpp - Narrow type emulation ----*- C++
+//===- VectorEmulateNarrowType.cpp - Narrow type emulation ----*- C++
 //-*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -30,16 +30,11 @@ struct ConvertVectorLoad final : OpConversionPattern<vector::LoadOp> {
   LogicalResult
   matchAndRewrite(vector::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-//    Type newTy = getTypeConverter()->convertType(op.getType());
-//    if (!newTy) {
-//      return rewriter.notifyMatchFailure(
-//          op->getLoc(),
-//          llvm::formatv("failed to convert vector type: {0}", op.getType()));
-//    }
 
     auto loc = op.getLoc();
     Type oldElementType = op.getType().getElementType();
-    Type newElementType = getTypeConverter()->convertType<VectorType>(op.getType()).getElementType();
+    Type newElementType =
+        cast<MemRefType>(adaptor.getBase().getType()).getElementType();
     int srcBits = oldElementType.getIntOrFloatBitWidth();
     int dstBits = newElementType.getIntOrFloatBitWidth();
 
@@ -49,21 +44,39 @@ struct ConvertVectorLoad final : OpConversionPattern<vector::LoadOp> {
     }
     int scale = dstBits / srcBits;
 
-    auto newType =
-        VectorType::get(op.getVectorType().getNumElements() / scale,
-            newElementType);
+    // Adjust the number of elements to load when emulating narrow types,
+    // and then cast back to the original type with vector.bitcast op.
+    // For example, to emulate i4 to i8, the following op:
+    //
+    // %1 = vector.load %0[%c0, %c0] : memref<3x4xi4>, vector<4xi4>
+    //
+    // can be replaced with
+    //
+    // %1 = vector.load %0[%c0, %c0] : memref<3x4xi8>, vector<2xi8>
+    // %2 = vector.bitcast %1 : vector<2xi8> to vector<4xi4>
+    //
+    ArrayRef<int64_t> origShape = op.getVectorType().getShape();
+    auto numElements = llvm::to_vector(origShape);
+    numElements.back() = int(std::ceil(double(numElements.back()) / scale));
 
+    auto newType = VectorType::get(numElements, newElementType);
     auto newLoad = rewriter.create<vector::LoadOp>(
         loc, newType, adaptor.getBase(), adaptor.getIndices());
 
-    auto packedType =
-        VectorType::get(newLoad.getVectorType().getNumElements() * scale,
-            oldElementType);
+    numElements.back() *= scale;
+    auto castType = VectorType::get(numElements, oldElementType);
+    auto bitCast = rewriter.create<vector::BitCastOp>(loc, castType, newLoad);
 
-    auto bitCast = rewriter.create<vector::BitCastOp>(
-        loc, packedType, newLoad);
-
-    rewriter.replaceOp(op, bitCast->getResult(0));
+    // To deal with the odd number of elements at the last dimension.
+    if (llvm::to_vector(origShape).back() % scale != 0) {
+      SmallVector<int64_t> offsets(origShape.size(), 0);
+      SmallVector<int64_t> strides(origShape.size(), 1);
+      auto extractOp = rewriter.create<vector::ExtractStridedSliceOp>(
+          loc, bitCast, offsets, origShape, strides);
+      rewriter.replaceOp(op, extractOp->getResult(0));
+    } else {
+      rewriter.replaceOp(op, bitCast->getResult(0));
+    }
 
     return success();
   }
@@ -81,26 +94,4 @@ void vector::populateVectorNarrowTypeEmulationPatterns(
   // Populate `vector.*` conversion patterns.
   patterns
       .add<ConvertVectorLoad>(typeConverter, patterns.getContext());
-}
-
-void vector::populateVectorNarrowTypeEmulationConversions(
-    arith::NarrowTypeEmulationConverter &typeConverter) {
-  typeConverter.addConversion(
-      [&typeConverter](VectorType ty) -> std::optional<Type> {
-        auto intTy = dyn_cast<IntegerType>(ty.getElementType());
-        if (!intTy)
-          return ty;
-
-        unsigned width = intTy.getWidth();
-        unsigned loadStoreWidth = typeConverter.getLoadStoreBitwidth();
-        if (width >= loadStoreWidth)
-          return ty;
-
-        auto newElemTy = IntegerType::get(ty.getContext(), loadStoreWidth,
-                                          intTy.getSignedness());
-        if (!newElemTy)
-          return std::nullopt;
-
-        return ty.cloneWith(std::nullopt, newElemTy);
-      });
 }
