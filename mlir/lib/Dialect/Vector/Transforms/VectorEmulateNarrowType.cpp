@@ -30,28 +30,41 @@ struct ConvertVectorLoad final : OpConversionPattern<vector::LoadOp> {
   LogicalResult
   matchAndRewrite(vector::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Type newTy = getTypeConverter()->convertType(op.getType());
-    if (!newTy) {
-      return rewriter.notifyMatchFailure(
-          op->getLoc(),
-          llvm::formatv("failed to convert vector type: {0}", op.getType()));
-    }
+//    Type newTy = getTypeConverter()->convertType(op.getType());
+//    if (!newTy) {
+//      return rewriter.notifyMatchFailure(
+//          op->getLoc(),
+//          llvm::formatv("failed to convert vector type: {0}", op.getType()));
+//    }
 
     auto loc = op.getLoc();
+    Type oldElementType = op.getType().getElementType();
+    Type newElementType = getTypeConverter()->convertType<VectorType>(op.getType()).getElementType();
+    int srcBits = oldElementType.getIntOrFloatBitWidth();
+    int dstBits = newElementType.getIntOrFloatBitWidth();
+
+    if (dstBits % srcBits != 0) {
+      return rewriter.notifyMatchFailure(
+          op, "only dstBits % srcBits == 0 supported");
+    }
+    int scale = dstBits / srcBits;
+
+    auto newType =
+        VectorType::get(op.getVectorType().getNumElements() / scale,
+            newElementType);
+
     auto newLoad = rewriter.create<vector::LoadOp>(
-        loc, newTy, adaptor.getBase(), adaptor.getIndices());
+        loc, newType, adaptor.getBase(), adaptor.getIndices());
 
-    auto srcElementType = op.getType().getElementType();
-//    auto dstType = getTypeConverter()->convertType<VectorType>(op.getType());
-//    int srcBits = srcElementType.getIntOrFloatBitWidth();
-//    int dstBits = dstType.getElementType().getIntOrFloatBitWidth();
+    auto packedType =
+        VectorType::get(newLoad.getVectorType().getNumElements() * scale,
+            oldElementType);
 
-    VectorType packedType =
-        VectorType::get({8}, srcElementType);
     auto bitCast = rewriter.create<vector::BitCastOp>(
         loc, packedType, newLoad);
 
     rewriter.replaceOp(op, bitCast->getResult(0));
+
     return success();
   }
 };
