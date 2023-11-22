@@ -165,6 +165,51 @@ static LogicalResult peelForLoop(RewriterBase &b, ForOp forOp,
   return success();
 }
 
+static LogicalResult peelForLoopFront(RewriterBase &b, ForOp forOp,
+                                      ForOp &partialIteration, Value &splitBound) {
+  RewriterBase::InsertionGuard guard(b);
+  auto lbInt = getConstantIntValue(forOp.getLowerBound());
+  auto ubInt = getConstantIntValue(forOp.getUpperBound());
+  auto stepInt = getConstantIntValue(forOp.getStep());
+
+  // No specialization necessary if there is only 1 iteration.
+  if (lbInt && ubInt && stepInt && (*ubInt - *lbInt) / *stepInt == 1)
+    return failure();
+
+  // Slow path: Examine the ops that define lb, ub and step.
+  AffineExpr sym0, sym1, sym2;
+  bindSymbols(b.getContext(), sym0, sym1, sym2);
+  SmallVector<Value> operands{forOp.getLowerBound(), forOp.getUpperBound(),
+                              forOp.getStep()};
+  //AffineMap map = AffineMap::get(0, 3, {(sym1 - sym0) % sym2});
+  //affine::fullyComposeAffineMapAndOperands(&map, &operands);
+//  if (auto constExpr = dyn_cast<AffineConstantExpr>(map.getResult(0)))
+//    if (constExpr.getValue() == 0)
+//      return failure();
+
+  // New lower bound: %lb + %step
+  auto modMap = AffineMap::get(0, 3, {sym0 + sym2});
+  b.setInsertionPoint(forOp);
+  auto loc = forOp.getLoc();
+  splitBound = b.createOrFold<AffineApplyOp>(loc, modMap,
+                                             ValueRange{forOp.getLowerBound(),
+                                                        forOp.getUpperBound(),
+                                                        forOp.getStep()});
+
+  // Create ForOp for partial iteration.
+  partialIteration = cast<ForOp>(b.clone(*forOp.getOperation()));
+  partialIteration.getUpperBoundMutable().assign(splitBound);
+  b.replaceAllUsesWith(forOp.getResults(), partialIteration->getResults());
+  partialIteration.getInitArgsMutable().assign(forOp->getResults());
+
+  // Set new upper loop bound.
+  b.setInsertionPointAfter(forOp);
+  b.updateRootInPlace(
+      forOp, [&]() { forOp.getLowerBoundMutable().assign(splitBound); });
+
+  return success();
+}
+
 static void rewriteAffineOpAfterPeeling(RewriterBase &rewriter, ForOp forOp,
                                         ForOp partialIteration,
                                         Value previousUb) {
@@ -194,13 +239,12 @@ static void rewriteAffineOpAfterPeeling(RewriterBase &rewriter, ForOp forOp,
 LogicalResult mlir::scf::peelForLoopAndSimplifyBounds(RewriterBase &rewriter,
                                                       ForOp forOp,
                                                       ForOp &partialIteration) {
-  Value previousUb = forOp.getUpperBound();
+  //Value previousUb = forOp.getUpperBound();
   Value splitBound;
-  if (failed(peelForLoop(rewriter, forOp, partialIteration, splitBound)))
+  if (failed(peelForLoopFront(rewriter, forOp, partialIteration, splitBound)))
     return failure();
 
   // Rewrite affine.min and affine.max ops.
-  rewriteAffineOpAfterPeeling(rewriter, forOp, partialIteration, previousUb);
 
   return success();
 }
