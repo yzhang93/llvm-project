@@ -165,51 +165,6 @@ static LogicalResult peelForLoop(RewriterBase &b, ForOp forOp,
   return success();
 }
 
-static LogicalResult peelForLoopFront(RewriterBase &b, ForOp forOp,
-                                      ForOp &partialIteration, Value &splitBound) {
-  RewriterBase::InsertionGuard guard(b);
-  auto lbInt = getConstantIntValue(forOp.getLowerBound());
-  auto ubInt = getConstantIntValue(forOp.getUpperBound());
-  auto stepInt = getConstantIntValue(forOp.getStep());
-
-  // No specialization necessary if there is only 1 iteration.
-  if (lbInt && ubInt && stepInt && (*ubInt - *lbInt) / *stepInt == 1)
-    return failure();
-
-  // Slow path: Examine the ops that define lb, ub and step.
-  AffineExpr sym0, sym1, sym2;
-  bindSymbols(b.getContext(), sym0, sym1, sym2);
-  SmallVector<Value> operands{forOp.getLowerBound(), forOp.getUpperBound(),
-                              forOp.getStep()};
-  //AffineMap map = AffineMap::get(0, 3, {(sym1 - sym0) % sym2});
-  //affine::fullyComposeAffineMapAndOperands(&map, &operands);
-//  if (auto constExpr = dyn_cast<AffineConstantExpr>(map.getResult(0)))
-//    if (constExpr.getValue() == 0)
-//      return failure();
-
-  // New lower bound: %lb + %step
-  auto modMap = AffineMap::get(0, 3, {sym0 + sym2});
-  b.setInsertionPoint(forOp);
-  auto loc = forOp.getLoc();
-  splitBound = b.createOrFold<AffineApplyOp>(loc, modMap,
-                                             ValueRange{forOp.getLowerBound(),
-                                                        forOp.getUpperBound(),
-                                                        forOp.getStep()});
-
-  // Create ForOp for partial iteration.
-  partialIteration = cast<ForOp>(b.clone(*forOp.getOperation()));
-  partialIteration.getUpperBoundMutable().assign(splitBound);
-  b.replaceAllUsesWith(forOp.getResults(), partialIteration->getResults());
-  partialIteration.getInitArgsMutable().assign(forOp->getResults());
-
-  // Set new upper loop bound.
-  b.setInsertionPointAfter(forOp);
-  b.updateRootInPlace(
-      forOp, [&]() { forOp.getLowerBoundMutable().assign(splitBound); });
-
-  return success();
-}
-
 static void rewriteAffineOpAfterPeeling(RewriterBase &rewriter, ForOp forOp,
                                         ForOp partialIteration,
                                         Value previousUb) {
@@ -236,15 +191,77 @@ static void rewriteAffineOpAfterPeeling(RewriterBase &rewriter, ForOp forOp,
   });
 }
 
+static void removeAffineOpInsideFirstIteration(RewriterBase &rewriter,
+                                               ForOp partialIteration,
+                                               Value previousUb) {
+  Value partialIv = partialIteration.getInductionVar();
+  Value step = partialIteration.getStep();
+
+  partialIteration.walk([&](Operation *affineOp) {
+    if (!isa<AffineMinOp, AffineMaxOp>(affineOp))
+      return WalkResult::advance();
+
+    // Hack to reuse the existing utils when ub - iv >= step.
+    (void)scf::rewritePeeledMinMaxOp(rewriter, affineOp, partialIv, previousUb,
+                                     step, /*insideLoop=*/true);
+    return WalkResult::advance();
+  });
+}
+
 LogicalResult mlir::scf::peelForLoopAndSimplifyBounds(RewriterBase &rewriter,
                                                       ForOp forOp,
                                                       ForOp &partialIteration) {
-  //Value previousUb = forOp.getUpperBound();
+  Value previousUb = forOp.getUpperBound();
   Value splitBound;
-  if (failed(peelForLoopFront(rewriter, forOp, partialIteration, splitBound)))
+  if (failed(peelForLoop(rewriter, forOp, partialIteration, splitBound)))
     return failure();
 
   // Rewrite affine.min and affine.max ops.
+  rewriteAffineOpAfterPeeling(rewriter, forOp, partialIteration, previousUb);
+
+  return success();
+}
+
+LogicalResult mlir::scf::peelFirstIterationForLoop(RewriterBase &b, ForOp forOp,
+                                                   ForOp &firstIteration) {
+  RewriterBase::InsertionGuard guard(b);
+  auto lbInt = getConstantIntValue(forOp.getLowerBound());
+  auto ubInt = getConstantIntValue(forOp.getUpperBound());
+  auto stepInt = getConstantIntValue(forOp.getStep());
+
+  // Peeling is not needed if there is one or less iteration.
+  if (lbInt && ubInt && stepInt && (*ubInt - *lbInt) / *stepInt <= 1)
+    return success();
+
+  // Slow path: Examine the ops that define lb, ub and step.
+  AffineExpr sym0, sym1, sym2;
+  bindSymbols(b.getContext(), sym0, sym1, sym2);
+  SmallVector<Value> operands{forOp.getLowerBound(), forOp.getUpperBound(),
+                              forOp.getStep()};
+  AffineMap map = AffineMap::get(0, 3, {(sym1 - sym0) % sym2});
+  affine::fullyComposeAffineMapAndOperands(&map, &operands);
+  if (auto constExpr = dyn_cast<AffineConstantExpr>(map.getResult(0)))
+    if (constExpr.getValue() == 0)
+      return failure();
+
+  // New lower bound for main loop: %lb + %step
+  auto ubMap = AffineMap::get(0, 3, {sym0 + sym2});
+  b.setInsertionPoint(forOp);
+  auto loc = forOp.getLoc();
+  Value splitBound = b.createOrFold<AffineApplyOp>(
+      loc, ubMap,
+      ValueRange{forOp.getLowerBound(), forOp.getUpperBound(),
+                 forOp.getStep()});
+
+  // Peel the first iteration.
+  b.setInsertionPoint(forOp);
+  firstIteration = cast<ForOp>(b.clone(*forOp.getOperation()));
+  firstIteration.getUpperBoundMutable().assign(splitBound);
+
+  // Update main loop with new lower bound.
+  forOp.getInitArgsMutable().assign(firstIteration->getResults());
+  b.updateRootInPlace(
+      forOp, [&]() { forOp.getLowerBoundMutable().assign(splitBound); });
 
   return success();
 }
@@ -254,27 +271,43 @@ static constexpr char kPartialIterationLabel[] = "__partial_iteration__";
 
 namespace {
 struct ForLoopPeelingPattern : public OpRewritePattern<ForOp> {
-  ForLoopPeelingPattern(MLIRContext *ctx, bool skipPartial)
-      : OpRewritePattern<ForOp>(ctx), skipPartial(skipPartial) {}
+  ForLoopPeelingPattern(MLIRContext *ctx, bool peelFront, bool skipPartial)
+      : OpRewritePattern<ForOp>(ctx), peelFront(peelFront),
+        skipPartial(skipPartial) {}
 
   LogicalResult matchAndRewrite(ForOp forOp,
                                 PatternRewriter &rewriter) const override {
     // Do not peel already peeled loops.
     if (forOp->hasAttr(kPeeledLoopLabel))
       return failure();
-    if (skipPartial) {
-      // No peeling of loops inside the partial iteration of another peeled
-      // loop.
-      Operation *op = forOp.getOperation();
-      while ((op = op->getParentOfType<scf::ForOp>())) {
-        if (op->hasAttr(kPartialIterationLabel))
-          return failure();
-      }
-    }
-    // Apply loop peeling.
+
     scf::ForOp partialIteration;
-    if (failed(peelForLoopAndSimplifyBounds(rewriter, forOp, partialIteration)))
-      return failure();
+    // The case for peeling the first iteration of the loop.
+    if (peelFront) {
+      if (failed(
+              peelFirstIterationForLoop(rewriter, forOp, partialIteration))) {
+        return failure();
+      }
+      // Remove affine.min op in the first (partial) iteration.
+      removeAffineOpInsideFirstIteration(rewriter, partialIteration,
+                                         forOp.getUpperBound());
+
+    } else {
+      if (skipPartial) {
+        // No peeling of loops inside the partial iteration of another peeled
+        // loop.
+        Operation *op = forOp.getOperation();
+        while ((op = op->getParentOfType<scf::ForOp>())) {
+          if (op->hasAttr(kPartialIterationLabel))
+            return failure();
+        }
+      }
+      // Apply loop peeling.
+      if (failed(
+              peelForLoopAndSimplifyBounds(rewriter, forOp, partialIteration)))
+        return failure();
+    }
+
     // Apply label, so that the same loop is not rewritten a second time.
     rewriter.updateRootInPlace(partialIteration, [&]() {
       partialIteration->setAttr(kPeeledLoopLabel, rewriter.getUnitAttr());
@@ -285,6 +318,8 @@ struct ForLoopPeelingPattern : public OpRewritePattern<ForOp> {
     });
     return success();
   }
+
+  bool peelFront;
 
   /// If set to true, loops inside partial iterations of another peeled loop
   /// are not peeled. This reduces the size of the generated code. Partial
@@ -317,7 +352,7 @@ struct ForLoopPeeling : public impl::SCFForLoopPeelingBase<ForLoopPeeling> {
     auto *parentOp = getOperation();
     MLIRContext *ctx = parentOp->getContext();
     RewritePatternSet patterns(ctx);
-    patterns.add<ForLoopPeelingPattern>(ctx, skipPartial);
+    patterns.add<ForLoopPeelingPattern>(ctx, peelFront, skipPartial);
     (void)applyPatternsAndFoldGreedily(parentOp, std::move(patterns));
 
     // Drop the markers.
