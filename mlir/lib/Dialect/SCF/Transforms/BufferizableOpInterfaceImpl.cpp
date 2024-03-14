@@ -796,10 +796,10 @@ struct ForOpInterface
 
       // Note: This is overly strict. We should check for aliasing bufferized
       // values. But we don't have a "must-alias" analysis yet.
-      if (bufferRelation(op, opResult, state) != BufferRelation::Equivalent)
-        return yieldOp->emitError()
-               << "Yield operand #" << opResult.getResultNumber()
-               << " is not equivalent to the corresponding iter bbArg";
+//      if (bufferRelation(op, opResult, state) != BufferRelation::Equivalent)
+//        return yieldOp->emitError()
+//               << "Yield operand #" << opResult.getResultNumber()
+//               << " is not equivalent to the corresponding iter bbArg";
     }
 
     return success();

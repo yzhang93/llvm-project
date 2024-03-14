@@ -19,8 +19,11 @@
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/IR/TransformInterfaces.h"
 #include "mlir/Dialect/Transform/IR/TransformOps.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/OpDefinition.h"
@@ -221,6 +224,32 @@ transform::LoopPeelOp::applyToOne(transform::TransformRewriter &rewriter,
 // LoopPipelineOp
 //===----------------------------------------------------------------------===//
 
+static void addDepOps(llvm::SmallDenseSet<Operation *> &dep, Operation *op,
+                      Block *block) {
+  if (!dep.insert(op).second)
+    return;
+  for (Value operand : op->getOperands()) {
+    Operation *defOp = operand.getDefiningOp();
+    if (defOp && defOp->getBlock() == block)
+      addDepOps(dep, defOp, block);
+  }
+}
+
+/// Helper to recursively add operation dependencies within `block` to `dep`
+/// set.
+static void addUserOps(llvm::SmallDenseSet<Operation *> &dep, Operation *op,
+                      Block *block) {
+  if (isa<memref::SubViewOp>(op))
+    return;
+  for (Value operand : op->getOperands()) {
+    Operation *defOp = operand.getDefiningOp();
+    if (defOp && defOp->getBlock() == block)
+      addDepOps(dep, defOp, block);
+      dep.insert(op);
+  }
+  return;
+}
+
 /// Callback for PipeliningOption. Populates `schedule` with the mapping from an
 /// operation to its logical time position given the iteration interval and the
 /// read latency. The latter is only relevant for vector transfers.
@@ -228,32 +257,43 @@ static void
 loopScheduling(scf::ForOp forOp,
                std::vector<std::pair<Operation *, unsigned>> &schedule,
                unsigned iterationInterval, unsigned readLatency) {
-  auto getLatency = [&](Operation *op) -> unsigned {
-    if (isa<vector::TransferReadOp>(op))
-      return readLatency;
-    return 1;
-  };
-
-  DenseMap<Operation *, unsigned> opCycles;
-  std::map<unsigned, std::vector<Operation *>> wrappedSchedule;
+  llvm::SmallDenseSet<Operation *> weightLoad;
   for (Operation &op : forOp.getBody()->getOperations()) {
-    if (isa<scf::YieldOp>(op))
-      continue;
-    unsigned earlyCycle = 0;
-    for (Value operand : op.getOperands()) {
-      Operation *def = operand.getDefiningOp();
-      if (!def)
-        continue;
-      earlyCycle = std::max(earlyCycle, opCycles[def] + getLatency(def));
+    // Find the double buffered subview, and make it stage 0
+    if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)){
+      auto memType = dyn_cast<MemRefType>(subviewOp.getSource().getType());
+      SmallVector<int64_t> shape = llvm::to_vector(memType.getShape());
+      if (shape[0] == 2){
+        addDepOps(weightLoad, &op, forOp.getBody());
+
+        // Also find the users of this subview, and make them stage 0
+        Value result = op.getResult(0);
+        if (result.use_empty()) {
+          continue;
+        }
+        for (Operation *userOp : result.getUsers()) {
+          addDepOps(weightLoad, userOp, forOp.getBody());
+
+          // Add the user of bufferization.to_tensor to stage 0 lists
+          if (isa<bufferization::ToTensorOp>(userOp)){
+            Value result2 = userOp->getResult(0);
+            if (result2.use_empty()) {
+              continue;
+            }
+            for (Operation *userOp2 : result2.getUsers()) {
+              addDepOps(weightLoad, userOp2, forOp.getBody());
+            }
+          }
+        }
+      }
     }
-    opCycles[&op] = earlyCycle;
-    wrappedSchedule[earlyCycle % iterationInterval].push_back(&op);
   }
-  for (const auto &it : wrappedSchedule) {
-    for (Operation *op : it.second) {
-      unsigned cycle = opCycles[op];
-      schedule.emplace_back(op, cycle / iterationInterval);
-    }
+
+  for (Operation &op : forOp.getBody()->getOperations()) {
+    if (!isa<scf::YieldOp>(op) && !weightLoad.count(&op))
+      schedule.push_back(std::make_pair(&op, 1));
+    if (weightLoad.count(&op))
+      schedule.push_back(std::make_pair(&op, 0));
   }
 }
 

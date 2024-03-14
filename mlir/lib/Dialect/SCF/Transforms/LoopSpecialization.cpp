@@ -192,6 +192,23 @@ static void rewriteAffineOpAfterPeeling(RewriterBase &rewriter, ForOp forOp,
   });
 }
 
+//static void removeAffineOpInsideFirstIteration(RewriterBase &rewriter,
+//                                               ForOp partialIteration,
+//                                               Value previousUb) {
+//  Value partialIv = partialIteration.getInductionVar();
+//  Value step = partialIteration.getStep();
+//
+//  partialIteration.walk([&](Operation *affineOp) {
+//    if (!isa<AffineMinOp, AffineMaxOp>(affineOp))
+//      return WalkResult::advance();
+//
+//    // Hack to reuse the existing utils when ub - iv >= step.
+//    (void)scf::rewritePeeledMinMaxOp(rewriter, affineOp, partialIv, previousUb,
+//                                     step, /*insideLoop=*/true);
+//    return WalkResult::advance();
+//  });
+//}
+
 LogicalResult mlir::scf::peelForLoopAndSimplifyBounds(RewriterBase &rewriter,
                                                       ForOp forOp,
                                                       ForOp &partialIteration) {
@@ -269,6 +286,10 @@ struct ForLoopPeelingPattern : public OpRewritePattern<ForOp> {
               peelForLoopFirstIteration(rewriter, forOp, partialIteration))) {
         return failure();
       }
+      // Remove affine.min op in the first (partial) iteration.
+//      removeAffineOpInsideFirstIteration(rewriter, partialIteration,
+//                                         forOp.getUpperBound());
+
     } else {
       if (skipPartial) {
         // No peeling of loops inside the partial iteration of another peeled
