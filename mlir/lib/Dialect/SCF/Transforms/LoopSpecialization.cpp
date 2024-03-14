@@ -130,8 +130,8 @@ static LogicalResult peelForLoop(RewriterBase &b, ForOp forOp,
 
   // No specialization necessary if step already divides upper bound evenly.
   // Fast path: lb, ub and step are constants.
-  if (lbInt && ubInt && stepInt && (*ubInt - *lbInt) % *stepInt == 0)
-    return failure();
+//  if (lbInt && ubInt && stepInt && (*ubInt - *lbInt) % *stepInt == 0)
+//    return failure();
   // Slow path: Examine the ops that define lb, ub and step.
   AffineExpr sym0, sym1, sym2;
   bindSymbols(b.getContext(), sym0, sym1, sym2);
@@ -220,7 +220,7 @@ LogicalResult mlir::scf::peelForLoopFirstIteration(RewriterBase &b, ForOp forOp,
   auto stepInt = getConstantIntValue(forOp.getStep());
 
   // Peeling is not needed if there is one or less iteration.
-  if (lbInt && ubInt && stepInt && (*ubInt - *lbInt) / *stepInt <= 1)
+  if (lbInt && ubInt && stepInt && ceil(float(*ubInt - *lbInt) / *stepInt) <= 1)
     return failure();
 
   AffineExpr lbSymbol, stepSymbol;

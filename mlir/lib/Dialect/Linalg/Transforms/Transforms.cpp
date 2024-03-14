@@ -36,6 +36,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <type_traits>
 #include <utility>
+#include "mlir/IR/BuiltinOps.h"
 
 #define DEBUG_TYPE "linalg-transforms"
 
@@ -587,9 +588,17 @@ FailureOr<PackResult> linalg::pack(RewriterBase &rewriter,
       ValueRange{inputsAndInits}.take_front(linalgOp.getNumDpsInputs());
   ValueRange inits =
       ValueRange{inputsAndInits}.take_back(linalgOp.getNumDpsInits());
+
+  linalg::MatmulOp matmulOp;
+  if (isa<linalg::MatmulOp>(linalgOp)){
+    llvm::outs() << "nnnnn" << "\n";
+    matmulOp = cast<linalg::MatmulOp>(linalgOp);
+  }
+  auto elidedAttrs = getPrunedAttributeList(matmulOp);
   auto packedLinalgOp = rewriter.create<linalg::GenericOp>(
       linalgOp.getLoc(), inits.getTypes(), inputs, inits, indexingMaps,
-      iteratorTypes);
+      iteratorTypes, /*bodyBuild=*/nullptr, elidedAttrs);
+
   packedLinalgOp.getRegion().takeBody(linalgOp->getRegion(0));
 
   // Step 4. Propagate packing to all the op results.
@@ -668,6 +677,7 @@ static LinalgOp transposeOneLinalgOperandAndReplace(
   operands[opOperand.getOperandNumber()] = transposedValue;
 
   ValueRange operandsRef(operands);
+  auto elidedAttrs = getPrunedAttributeList(linalgOp);
   auto transposedGenericOp = rewriter.create<linalg::GenericOp>(
       /*location=*/linalgOp->getLoc(),
       /*resultTensorTypes=*/
@@ -675,7 +685,8 @@ static LinalgOp transposeOneLinalgOperandAndReplace(
       /*inputs=*/operandsRef.take_front(linalgOp.getNumDpsInputs()),
       /*outputs=*/operandsRef.drop_front(linalgOp.getNumDpsInputs()),
       /*indexingMaps=*/indexingMaps,
-      /*iteratorTypes=*/linalgOp.getIteratorTypesArray());
+      /*iteratorTypes=*/linalgOp.getIteratorTypesArray(),
+      /*bodyBuild=*/nullptr, elidedAttrs);
   transposedGenericOp.getRegion().takeBody(linalgOp->getRegion(0));
   rewriter.replaceOp(linalgOp, transposedGenericOp->getResults());
 
